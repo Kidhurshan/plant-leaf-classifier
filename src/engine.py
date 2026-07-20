@@ -397,6 +397,23 @@ def train_model(
     }
 
 
+def read_history_csv(path) -> List[dict]:
+    """Load a ``{model}_history.csv`` back into a list of per-epoch dicts."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    rows: List[dict] = []
+    with open(path, newline="") as fh:
+        for r in csv.DictReader(fh):
+            rows.append({
+                "phase": int(r["phase"]), "epoch": int(r["epoch"]),
+                "train_loss": float(r["train_loss"]), "val_loss": float(r["val_loss"]),
+                "val_acc": float(r["val_acc"]), "val_macro_f1": float(r["val_macro_f1"]),
+                "time_s": float(r["time_s"]),
+            })
+    return rows
+
+
 def _write_history_csv(history: List[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not history:

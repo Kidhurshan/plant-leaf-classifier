@@ -23,8 +23,6 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import numpy as np                                # noqa: E402
-
 from src import viz                               # noqa: E402
 from src.augment import GPUAugment                # noqa: E402
 from src.config import load_config                # noqa: E402
@@ -35,10 +33,10 @@ from src.evaluate import (                         # noqa: E402
     save_confusion_csv,
 )
 from src.models import load_trained_model      # noqa: E402
+from src.report import write_summary_table       # noqa: E402
 from src.tta import compare_tta                    # noqa: E402
 from src.utils import (                            # noqa: E402
-    LOG, count_parameters, detect_amp, format_param_count, get_device,
-    gpu_report, set_seed,
+    LOG, count_parameters, detect_amp, get_device, gpu_report, set_seed,
 )
 
 
@@ -165,7 +163,8 @@ def main() -> None:
                   seed=cfg.seed)
 
     # ---- summary table --------------------------------------------------- #
-    _write_summary(per_model, cfg.model_list, met_dir, fig_dir)
+    order = cfg.model_list + ["ensemble"]
+    write_summary_table(per_model, order, met_dir, fig_dir)
     print("\nDone. Summary -> results/metrics/summary_table.md / .csv")
 
 
@@ -184,50 +183,6 @@ def _load_history(cfg, key, smoke):
                 "val_macro_f1": float(r["val_macro_f1"]),
             })
         return rows
-
-
-def _write_summary(per_model, model_keys, met_dir, fig_dir):
-    from src.utils import human_time
-    order = model_keys + ["ensemble"]
-    cols = ["Model", "Accuracy", "Macro-F1", "Macro-P", "Macro-R",
-            "Acc+TTA", "F1+TTA", "Params", "Train time"]
-
-    def fmt_row(k):
-        m = per_model[k]
-        tta_acc = "-" if np.isnan(m["acc_tta"]) else f"{m['acc_tta']:.4f}"
-        tta_f1 = "-" if np.isnan(m["f1_tta"]) else f"{m['f1_tta']:.4f}"
-        tt = "-" if np.isnan(m["train_time_s"]) else human_time(m["train_time_s"])
-        return {
-            "Model": viz.display_name(k), "Accuracy": f"{m['accuracy']:.4f}",
-            "Macro-F1": f"{m['macro_f1']:.4f}", "Macro-P": f"{m['macro_precision']:.4f}",
-            "Macro-R": f"{m['macro_recall']:.4f}", "Acc+TTA": tta_acc,
-            "F1+TTA": tta_f1, "Params": format_param_count(m["params"]),
-            "Train time": tt,
-        }
-
-    rows = [fmt_row(k) for k in order]
-
-    # CSV
-    with open(met_dir / "summary_table.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=cols)
-        w.writeheader()
-        w.writerows(rows)
-
-    # Markdown
-    lines = ["# Model comparison — held-out test set", "",
-             "| " + " | ".join(cols) + " |",
-             "|" + "|".join(["---"] * len(cols)) + "|"]
-    for r in rows:
-        lines.append("| " + " | ".join(str(r[c]) for c in cols) + " |")
-    best = max(order, key=lambda k: per_model[k]["macro_f1"])
-    lines += ["", f"**Best by macro-F1:** {viz.display_name(best)} "
-                  f"({per_model[best]['macro_f1']:.4f}).", ""]
-    (met_dir / "summary_table.md").write_text("\n".join(lines))
-
-    # Also render a table figure for the report.
-    viz.plot_comparison_table(
-        rows, cols, out_path=Path(fig_dir) / "summary_table.png",
-        title="Model comparison (test set)")
 
 
 if __name__ == "__main__":
