@@ -12,8 +12,9 @@
 # ---------------------------------------------------------------------------
 
 # --- Deep learning (Colab-managed; floors only) ---
-torch>=2.2
-torchvision>=0.17
+# torch>=2.3 for the torch.amp.GradScaler(device) / autocast(device_type=...) API.
+torch>=2.3
+torchvision>=0.18
 
 # --- Models / backbones (pinned; provides all three timm backbones) ---
 timm==1.0.15
@@ -21,20 +22,15 @@ timm==1.0.15
 # --- Dataset download ---
 kaggle==1.6.17
 
-# --- Numerics / data (Colab-managed core, pinned analysis stack) ---
-numpy>=1.26,<3
-pandas==2.2.3
-scikit-learn==1.5.2
+# --- Numerics / metrics ---
+numpy>=1.26,<3            # Colab-managed core (floor only, avoids ABI churn)
+scikit-learn==1.5.2       # metrics: f1, confusion matrix, classification report, t-SNE
 
 # --- Config ---
 PyYAML==6.0.2
 
 # --- Visualisation ---
-matplotlib==3.9.2
-seaborn==0.13.2
-
-# --- Progress bars ---
-tqdm==4.66.5
+matplotlib==3.9.2         # all figures (viz.py is matplotlib-only)
 
 # --- Image IO (Colab-managed; floor only) ---
 Pillow>=10.0

@@ -59,9 +59,9 @@ def compute_gradcam(model, x: torch.Tensor,
 def overlay_cam(image_hwc_uint8: np.ndarray, cam: np.ndarray,
                 alpha: float = 0.45) -> np.ndarray:
     """Blend a [0,1] heatmap over an HWC uint8 image using the 'jet' colormap."""
-    import matplotlib.cm as cm
+    from matplotlib import colormaps
 
-    heat = cm.get_cmap("jet")(np.clip(cam, 0, 1))[..., :3]  # [H, W, 3] float
+    heat = colormaps["jet"](np.clip(cam, 0, 1))[..., :3]  # [H, W, 3] float
     heat = (heat * 255).astype(np.float32)
     base = image_hwc_uint8.astype(np.float32)
     if base.shape[:2] != heat.shape[:2]:  # safety: resize heat to image

@@ -366,6 +366,7 @@ def train_model(
                         "phase 2.", bs, new_bs)
             bs = new_bs
             start_epoch = 1
+            history[:] = [h for h in history if h["phase"] == 1]  # drop aborted P2 rows
             if amp.device.type == "cuda":
                 torch.cuda.empty_cache()
 
