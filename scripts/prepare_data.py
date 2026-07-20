@@ -26,15 +26,11 @@ from src.data import (                        # noqa: E402
     discover_dataset,
     download_dataset,
     make_stratified_splits,
+    splits_csv_path,
     stratified_subset_indices,
     write_splits_csv,
 )
 from src.utils import LOG                      # noqa: E402
-
-
-def splits_csv_path(cfg, smoke: bool) -> str:
-    name = "splits_smoke.csv" if smoke else "splits.csv"
-    return os.path.join(cfg.paths.metrics_dir, name)
 
 
 def main() -> None:
@@ -87,11 +83,11 @@ def main() -> None:
         )
         write_splits_csv(
             sub_paths, sub_labels, disc.class_names, split,
-            splits_csv_path(cfg, args.smoke),
+            splits_csv_path(cfg.paths.metrics_dir, args.smoke),
         )
 
     print("\nDone. Cache:", out_cache)
-    print("Splits:", splits_csv_path(cfg, args.smoke))
+    print("Splits:", splits_csv_path(cfg.paths.metrics_dir, args.smoke))
 
 
 if __name__ == "__main__":

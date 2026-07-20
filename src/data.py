@@ -567,6 +567,11 @@ class GPUTensorDataset:
             yield self.images[b], self.labels[b]
 
 
+def splits_csv_path(metrics_dir: str | Path, smoke: bool = False) -> Path:
+    name = "splits_smoke.csv" if smoke else "splits.csv"
+    return Path(metrics_dir) / name
+
+
 def load_split_datasets(cache: dict, split: np.ndarray, device):
     """Build train/val/test :class:`GPUTensorDataset` objects from a loaded
     cache and a split-name array."""
@@ -577,3 +582,22 @@ def load_split_datasets(cache: dict, split: np.ndarray, device):
         idx = np.where(split == name)[0]
         out[name] = GPUTensorDataset(images, labels, idx, device)
     return out
+
+
+def prepare_datasets(cfg, device, smoke: bool = False):
+    """Load the cache + splits and build train/val/test GPU datasets.
+
+    Returns ``(datasets, class_names)``. Raises a clear error if the cache and
+    the splits file disagree (i.e. one was built with ``--smoke`` and the other
+    without).
+    """
+    cache = load_cache(cache_path(cfg.paths.cache_dir, smoke))
+    split = read_splits_csv(splits_csv_path(cfg.paths.metrics_dir, smoke))
+    n_cache = int(cache["images"].shape[0])
+    if len(split) != n_cache:
+        raise ValueError(
+            f"Split rows ({len(split)}) != cached images ({n_cache}). Rebuild "
+            f"both with the SAME --smoke setting via scripts/prepare_data.py."
+        )
+    datasets = load_split_datasets(cache, split, device)
+    return datasets, cache["class_names"]
