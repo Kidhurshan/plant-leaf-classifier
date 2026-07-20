@@ -210,6 +210,29 @@ def build_model(cfg: Config, model_key: str, device=None) -> LeafClassifier:
     return model
 
 
+def load_trained_model(cfg: Config, model_key: str, ckpt_path, device=None) -> LeafClassifier:
+    """Build the model and load weights from a saved checkpoint.
+
+    Used by ``scripts/evaluate_all.py`` and ``scripts/predict.py`` so evaluation
+    and the live demo depend only on saved checkpoints, never on training state.
+    """
+    from pathlib import Path
+    ckpt_path = Path(ckpt_path)
+    if not ckpt_path.exists():
+        raise FileNotFoundError(
+            f"Checkpoint not found: {ckpt_path}. Train '{model_key}' first "
+            f"(scripts/train.py --model {model_key})."
+        )
+    model = build_model(cfg, model_key, device=device)
+    ckpt = torch.load(ckpt_path, map_location=device or "cpu", weights_only=False)
+    state = ckpt["model_state"] if "model_state" in ckpt else ckpt
+    model.load_state_dict(state)
+    model.eval()
+    LOG.info("Loaded '%s' weights from %s (val macro-F1=%.4f).",
+             model_key, ckpt_path, ckpt.get("val_macro_f1", float("nan")))
+    return model
+
+
 def describe_model(model: LeafClassifier) -> str:
     """Short human-readable summary: backbone, feature dim, param counts, and
     the top-level child modules."""
