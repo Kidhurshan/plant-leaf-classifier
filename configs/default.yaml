@@ -1,0 +1,102 @@
+# ===========================================================================
+# EC8010/EC8020 Design Task 4 -- single source of truth for ALL hyperparameters.
+# No hyperparameter is hard-coded anywhere else in the codebase.
+# Validated on load by src/config.py (fails early with a clear message).
+# ===========================================================================
+
+seed: 42
+
+paths:
+  # Root for the downloaded Kaggle dataset (git-ignored).
+  data_dir: data
+  # Cached uint8 image tensor + labels live here (git-ignored, ~705 MB).
+  cache_dir: data/cache
+  # Checkpoints. Point this at a mounted Drive folder on Colab to survive
+  # dropped sessions, e.g. /content/drive/MyDrive/task4_ckpts
+  checkpoint_dir: checkpoints
+  # Report assets (figures/ and metrics/ ARE committed; gradcam/ is regenerated).
+  results_dir: results
+  figures_dir: results/figures
+  metrics_dir: results/metrics
+  gradcam_dir: results/gradcam
+
+data:
+  kaggle_slug: mahmoudshaheen1134/plant-leaf-image-dataset
+  num_classes: 8
+  expected_total: 3588           # warn (do not crash) if the real total differs
+  cache_size: 256                # images are decoded + resized to this once, then cached
+  img_size: 224                  # training/eval resolution (Swin is fixed at 224)
+  # Deterministic stratified split fractions (must sum to 1.0).
+  split:
+    train: 0.70
+    val: 0.15
+    test: 0.15
+
+# Model registry. Each entry: a short key -> backbone checkpoint (+ optional
+# CBAM wrapper + a documented fallback used if the primary is unavailable in
+# the installed timm). The shared head is identical across all three.
+models:
+  efficientnetv2s:
+    backbone: tf_efficientnetv2_s.in21k_ft_in1k
+    fallback: tf_efficientnetv2_s.in1k
+    cbam: false
+  swin_small:
+    backbone: swin_small_patch4_window7_224.ms_in22k_ft_in1k
+    fallback: swin_small_patch4_window7_224.ms_in1k
+    cbam: false
+  cbam_convnext:
+    backbone: convnext_tiny.fb_in22k_ft_in1k
+    fallback: convnext_tiny.fb_in1k
+    cbam: true
+
+# The order/list used by scripts/train.py --model all and by comparisons.
+model_list: [efficientnetv2s, swin_small, cbam_convnext]
+
+head:
+  dropout: 0.3                    # global-pool -> LayerNorm -> Dropout -> Linear(8)
+
+train:
+  batch_size: 64                  # auto-reduced on CUDA OOM
+  phase1_epochs: 5                # frozen backbone, head only
+  phase2_epochs: 35               # unfreeze all, cosine + warmup (max; early-stopped)
+  phase1_lr: 0.001                # higher LR for the fresh head
+  phase2_lr: 0.0001               # low LR for fine-tuning the backbone
+  warmup_epochs: 2                # linear warmup at the start of phase 2
+  weight_decay: 0.05
+  grad_clip: 1.0
+  patience: 8                     # early stopping on validation macro-F1
+  label_smoothing: 0.1            # used by the CE alternative
+  use_llrd: true                  # layer-wise LR decay in phase 2 (falls back gracefully)
+  llrd_decay: 0.85                # per-depth multiplier (deeper = larger LR)
+
+loss:
+  name: focal                     # focal | ce
+  focal_gamma: 2.0
+  focal_alpha: inverse_freq       # inverse_freq | none  (per-class weighting)
+  label_smoothing: 0.1            # applies to the ce alternative
+
+augment:
+  rrc_scale: [0.7, 1.0]           # random resized crop scale, output = img_size
+  hflip: true
+  vflip: true
+  rotation_deg: 30
+  color_jitter:
+    brightness: 0.3
+    contrast: 0.3
+    saturation: 0.3
+  random_erasing_p: 0.25
+  # Mixup / CutMix behind a flag; default ON in phase 2 only.
+  mixup: true
+  cutmix: true
+  mixup_alpha: 0.2
+  cutmix_alpha: 1.0
+  mix_prob: 0.5                   # per-batch probability of applying mixup/cutmix
+  mix_phase2_only: true
+
+eval:
+  tta: true                       # average softmax over {orig, hflip, vflip, both}
+
+smoke:
+  n_images: 200                   # ~200 images total, stratified
+  epochs: 2                       # 1 phase-1 epoch + 1 phase-2 epoch
+  batch_size: 32
