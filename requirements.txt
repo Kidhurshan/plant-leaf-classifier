@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# EC8010/EC8020 Design Task 4 -- plant leaf species classification
+# Assumed Python: 3.10-3.12 (Google Colab default is 3.11/3.12).
+#
+# IMPORTANT (Colab):
+#   torch / torchvision are ALREADY installed on the Colab runtime and are
+#   built against that runtime's exact CUDA version. We deliberately do NOT
+#   reinstall them here -- forcing a different build is the #1 cause of broken
+#   CUDA on Colab. The floors below are only asserted, not force-upgraded, by
+#   the notebook install cell. If you run off-Colab, install a CUDA-matched
+#   torch from https://pytorch.org first, then `pip install -r requirements.txt`.
+# ---------------------------------------------------------------------------
+
+# --- Deep learning (Colab-managed; floors only) ---
+torch>=2.2
+torchvision>=0.17
+
+# --- Models / backbones (pinned; provides all three timm backbones) ---
+timm==1.0.15
+
+# --- Dataset download ---
+kaggle==1.6.17
+
+# --- Numerics / data (Colab-managed core, pinned analysis stack) ---
+numpy>=1.26,<3
+pandas==2.2.3
+scikit-learn==1.5.2
+
+# --- Config ---
+PyYAML==6.0.2
+
+# --- Visualisation ---
+matplotlib==3.9.2
+seaborn==0.13.2
+
+# --- Progress bars ---
+tqdm==4.66.5
+
+# --- Image IO (Colab-managed; floor only) ---
+Pillow>=10.0

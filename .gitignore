@@ -1,0 +1,33 @@
+# === Data and caches (never commit the dataset or the cached tensor) ===
+data/
+*.zip
+
+# === Model checkpoints and training artefacts (large, not committed) ===
+*.pt
+*.pth
+checkpoints/
+runs/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# === Secrets (CRITICAL: kaggle.json is an API credential) ===
+kaggle.json
+.env
+
+# === OS / editor ===
+.DS_Store
+.vscode/
+.idea/
+
+# === NOTE ===
+# results/figures/ and results/metrics/ ARE committed (small, needed for the
+# report). Notebooks ARE committed with outputs intact. Grad-CAM overlays under
+# results/gradcam/ are regenerated on demand and are ignored below to keep the
+# repo light; remove the next line if you want them versioned.
+results/gradcam/*.png
