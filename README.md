@@ -67,8 +67,8 @@ git add .gitignore README.md requirements.txt
 git commit -m "chore: initial commit — gitignore, readme, requirements"
 git add .
 git commit -m "feat: full project scaffold (src, scripts, notebooks, configs)"
-# create an EMPTY GitHub repo named e.g. egypli-leaf-classification, then:
-git remote add origin https://github.com/<you>/egypli-leaf-classification.git
+# create the EMPTY GitHub repo, then:
+git remote add origin https://github.com/Kidhurshan/plant-leaf-classifier.git
 git branch -M main
 git push -u origin main
 ```
