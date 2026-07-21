@@ -34,3 +34,7 @@ matplotlib==3.9.2         # all figures (viz.py is matplotlib-only)
 
 # --- Image IO (Colab-managed; floor only) ---
 Pillow>=10.0
+
+# --- Web demo (notebook 08): browser upload + 3-model comparison UI ---
+gradio>=4.44,<6
+
