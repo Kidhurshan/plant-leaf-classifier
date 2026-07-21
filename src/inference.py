@@ -110,40 +110,55 @@ class Predictor:
         return total.cpu().numpy()
 
     def predict(self, inputs: Sequence[str], top_k: int = 3,
-                with_gradcam: bool = False) -> List[Dict]:
+                with_gradcam: bool = False, batch_size: int = 16,
+                max_images: Optional[int] = None) -> List[Dict]:
+        """Predict for image files and/or folders.
+
+        Images are processed in chunks of ``batch_size`` so pointing this at a
+        large folder can never exhaust GPU memory (Grad-CAM needs backprop
+        memory, so keep the chunk small). ``max_images`` caps how many files are
+        read at all -- handy for a fast live demo.
+        """
         paths = inputs if isinstance(inputs, (list, tuple)) else [inputs]
         paths = gather_image_paths([str(p) for p in paths])
         if not paths:
             raise FileNotFoundError("No valid image files found in the input.")
-
-        u8 = torch.stack([self._load_uint8(p) for p in paths]).to(self.device)
-        x = self.aug(u8)
-        probs = self._probs(x)
-
-        cams = None
-        if with_gradcam:
-            from src.gradcam import compute_gradcam
-            cam_model = self.models[self.cam_model_key]
-            cams, _ = compute_gradcam(cam_model, x.clone())
+        if max_images is not None:
+            paths = paths[:max_images]
 
         results: List[Dict] = []
-        for i, path in enumerate(paths):
-            order = np.argsort(probs[i])[::-1]
-            top = [(self.class_names[int(j)], float(probs[i, j]))
-                   for j in order[:top_k]]
-            disp = self._display_image(u8[i])
-            item = {
-                "path": str(path),
-                "image": disp,
-                "pred": self.class_names[int(order[0])],
-                "confidence": float(probs[i, order[0]]),
-                "topk": top,
-                "probs": probs[i],
-            }
-            if with_gradcam and cams is not None:
-                from src.gradcam import overlay_cam
-                item["gradcam"] = overlay_cam(disp, cams[i])
-            results.append(item)
+        for start in range(0, len(paths), batch_size):
+            chunk = paths[start:start + batch_size]
+            u8 = torch.stack([self._load_uint8(p) for p in chunk]).to(self.device)
+            x = self.aug(u8)
+            probs = self._probs(x)
+
+            cams = None
+            if with_gradcam:
+                from src.gradcam import compute_gradcam
+                cams, _ = compute_gradcam(self.models[self.cam_model_key], x.clone())
+
+            for i, path in enumerate(chunk):
+                order = np.argsort(probs[i])[::-1]
+                top = [(self.class_names[int(j)], float(probs[i, j]))
+                       for j in order[:top_k]]
+                disp = self._display_image(u8[i])
+                item = {
+                    "path": str(path),
+                    "image": disp,
+                    "pred": self.class_names[int(order[0])],
+                    "confidence": float(probs[i, order[0]]),
+                    "topk": top,
+                    "probs": probs[i],
+                }
+                if cams is not None:
+                    from src.gradcam import overlay_cam
+                    item["gradcam"] = overlay_cam(disp, cams[i])
+                results.append(item)
+
+            del u8, x
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
         return results
 
 
