@@ -214,6 +214,21 @@ def load_checkpoint(path: Path, map_location="cpu") -> dict:
     return torch.load(path, map_location=map_location, weights_only=False)
 
 
+def _state_dict_compatible(model, state: dict) -> bool:
+    """True only if ``state`` matches the model exactly (same keys, same shapes).
+
+    Must be checked BEFORE calling ``load_state_dict``: torch copies every
+    matching tensor and only raises afterwards, so a failed strict load leaves
+    the model silently half-populated with stale weights.
+    """
+    if not state:
+        return False
+    own = model.state_dict()
+    if set(own.keys()) != set(state.keys()):
+        return False
+    return all(tuple(own[k].shape) == tuple(state[k].shape) for k in own)
+
+
 # --------------------------------------------------------------------------- #
 # Orchestration                                                               #
 # --------------------------------------------------------------------------- #
@@ -270,27 +285,27 @@ def train_model(
             )
             print(f"  >> Split changed since that checkpoint -> training "
                   f"'{model_key}' from scratch (old checkpoint ignored).")
+        elif not _state_dict_compatible(model, ck.get("model_state", {})):
+            # NOTE: torch's load_state_dict(strict=True) copies every MATCHING
+            # tensor before raising, so a try/except would silently leave the
+            # model partially loaded with stale weights. We therefore check
+            # compatibility up front and never call load at all on a mismatch.
+            LOG.warning(
+                "Checkpoint %s does not fit the current architecture "
+                "(key/shape mismatch). Training '%s' FROM SCRATCH with clean "
+                "pretrained weights.", last_path.name, model_key,
+            )
+            print(f"  >> Architecture changed since that checkpoint -> "
+                  f"training '{model_key}' from scratch.")
         else:
-            try:
-                model.load_state_dict(ck["model_state"])
-            except RuntimeError as exc:
-                # e.g. the architecture changed (CBAM added/moved) since the
-                # checkpoint was written -- safer to start clean than to guess.
-                LOG.warning(
-                    "Checkpoint %s does not fit the current architecture (%s). "
-                    "Training '%s' FROM SCRATCH.",
-                    last_path.name, str(exc).split("\n")[0], model_key,
-                )
-                print(f"  >> Architecture changed since that checkpoint -> "
-                      f"training '{model_key}' from scratch.")
-            else:
-                start_phase = ck.get("phase", 1)
-                start_epoch = ck.get("epoch", 0) + 1
-                state["best_f1"] = ck.get("best_f1", -1.0)
-                history = ck.get("history", [])
-                LOG.info("Resumed '%s' from %s (phase %d, next epoch %d, "
-                         "best_f1=%.4f).", model_key, last_path, start_phase,
-                         start_epoch, state["best_f1"])
+            model.load_state_dict(ck["model_state"])
+            start_phase = ck.get("phase", 1)
+            start_epoch = ck.get("epoch", 0) + 1
+            state["best_f1"] = ck.get("best_f1", -1.0)
+            history = ck.get("history", [])
+            LOG.info("Resumed '%s' from %s (phase %d, next epoch %d, "
+                     "best_f1=%.4f).", model_key, last_path, start_phase,
+                     start_epoch, state["best_f1"])
 
     def _log_epoch(phase: int, epoch: int, tr_loss: float,
                    val: dict, lr: float, dt: float) -> None:
