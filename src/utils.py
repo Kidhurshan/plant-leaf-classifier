@@ -319,6 +319,42 @@ def save_run_meta(
 # --------------------------------------------------------------------------- #
 # Misc                                                                         #
 # --------------------------------------------------------------------------- #
+def use_drive_paths(
+    cfg,
+    root: str = "/content/drive/MyDrive/task4_egypli",
+    mount_point: str = "/content/drive",
+) -> dict:
+    """Mount Google Drive and repoint the cache + checkpoint dirs at it.
+
+    Colab runtimes are **ephemeral**: disconnecting or deleting one wipes the
+    cached image tensor and every trained checkpoint. Pointing those two
+    directories at Drive makes them survive across sessions, so a dropped
+    runtime never costs a re-download or a re-train.
+
+    Call immediately after ``load_config()`` and before ``prepare_datasets()``
+    or ``train_model()``. Falls back to local paths (with a warning) off-Colab.
+    """
+    import os
+
+    try:
+        from google.colab import drive  # type: ignore
+        if not os.path.isdir(os.path.join(mount_point, "MyDrive")):
+            drive.mount(mount_point)
+    except Exception as exc:  # noqa: BLE001 - not on Colab / user declined
+        LOG.warning("Google Drive unavailable (%s); keeping local paths.", exc)
+        return {"cache_dir": cfg.paths.cache_dir,
+                "checkpoint_dir": cfg.paths.checkpoint_dir}
+
+    cfg.paths.cache_dir = f"{root}/cache"
+    cfg.paths.checkpoint_dir = f"{root}/checkpoints"
+    for p in (cfg.paths.cache_dir, cfg.paths.checkpoint_dir):
+        os.makedirs(p, exist_ok=True)
+    print(f"[drive] cache_dir      -> {cfg.paths.cache_dir}")
+    print(f"[drive] checkpoint_dir -> {cfg.paths.checkpoint_dir}")
+    return {"cache_dir": cfg.paths.cache_dir,
+            "checkpoint_dir": cfg.paths.checkpoint_dir}
+
+
 def file_fingerprint(path: str | Path) -> str:
     """Short md5 of a file's contents ('missing' if absent).
 
