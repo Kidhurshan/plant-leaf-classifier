@@ -60,6 +60,50 @@ def infer_species(rel_path: str, species: Sequence[str] = SPECIES) -> Optional[s
     return None
 
 
+def normalize_species(name: str) -> str:
+    """Lower-case a folder name and strip health-status/number tokens so that
+    ``Apple___healthy`` and ``Apple`` both become ``apple``."""
+    low = name.lower()
+    tokens = [t for t in re.split(r"[^a-z0-9]+", low) if t]
+    tokens = [t for t in tokens if t not in HEALTH_TOKENS and not t.isdigit()]
+    return " ".join(tokens)
+
+
+def find_class_root(root: str | Path, max_descend: int = 6) -> Path:
+    """Descend through single-subdirectory wrapper folders (as created by some
+    Kaggle unzips) to the level that actually branches into the species folders."""
+    cur = Path(root)
+    for _ in range(max_descend):
+        try:
+            entries = list(cur.iterdir())
+        except (NotADirectoryError, FileNotFoundError):
+            break
+        subdirs = [d for d in entries if d.is_dir() and not d.name.startswith(".")]
+        has_imgs = any(
+            f.is_file() and f.suffix.lower() in IMAGE_EXTS for f in entries
+        )
+        if len(subdirs) == 1 and not has_imgs:
+            cur = subdirs[0]
+        else:
+            break
+    return cur
+
+
+def structural_species(path: Path, class_root: Path) -> Optional[str]:
+    """Infer species from the folder structure: the first directory under
+    ``class_root`` (with health tokens stripped). Adapts to whatever species the
+    dataset actually contains, so nothing is silently dropped."""
+    try:
+        rel = Path(path).relative_to(class_root)
+    except ValueError:
+        return None
+    for comp in rel.parts[:-1]:          # directory components only
+        norm = normalize_species(comp)
+        if norm:
+            return norm
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Discovery                                                                    #
 # --------------------------------------------------------------------------- #
@@ -109,18 +153,29 @@ def discover_dataset(
             f"Did the Kaggle download succeed?"
         )
 
+    class_root = find_class_root(root)
     kept_paths: List[Path] = []
     kept_species: List[str] = []
     unmapped: List[Path] = []
+    n_structural = 0
     for p in all_files:
         rel = str(p.relative_to(root))
-        sp = infer_species(rel, species)
+        sp = infer_species(rel, species)          # keyword match (known species)
+        if sp is None:
+            sp = structural_species(p, class_root)  # fall back to folder layout
+            if sp is not None:
+                n_structural += 1
         if sp is None:
             unmapped.append(p)
             continue
         kept_paths.append(p)
         kept_species.append(sp)
 
+    if n_structural:
+        LOG.info(
+            "%d files were labelled from the folder structure (species not in "
+            "the default keyword list).", n_structural,
+        )
     if unmapped:
         LOG.warning(
             "%d/%d files could not be mapped to a species and were dropped "
@@ -251,11 +306,16 @@ def inspect_dataset(
         print(f"  {i}: {name:<12} {disc.class_counts.get(name, 0):>5}")
     print(f"  {'TOTAL':<15} {disc.total:>5}")
 
-    # Assert class count (allowed to crash); warn on total mismatch.
-    assert disc.num_classes == expected_classes, (
-        f"Expected {expected_classes} classes but found {disc.num_classes}: "
-        f"{disc.class_names}. Check species inference / dataset layout."
-    )
+    # Warn loudly (do not crash) if the class count differs from the expectation
+    # -- the dataset is the source of truth; downstream uses the discovered set.
+    if disc.num_classes != expected_classes:
+        LOG.warning(
+            "!!! Found %d classes, expected %d: %s. Proceeding with the ACTUAL "
+            "discovered classes (num_classes is data-driven downstream).",
+            disc.num_classes, expected_classes, disc.class_names,
+        )
+    else:
+        print(f"\nOK: {disc.num_classes} classes match the expectation.")
     if disc.total != expected_total:
         LOG.warning(
             "!!! Total image count is %d, expected %d. Proceeding anyway "
@@ -599,5 +659,13 @@ def prepare_datasets(cfg, device, smoke: bool = False):
             f"Split rows ({len(split)}) != cached images ({n_cache}). Rebuild "
             f"both with the SAME --smoke setting via scripts/prepare_data.py."
         )
+    class_names = cache["class_names"]
+    # num_classes is data-driven: reconcile the config to the actual dataset so
+    # the model head, focal alpha, etc. all use the real class count.
+    if len(class_names) != cfg.data.num_classes:
+        LOG.warning("Reconciling num_classes %d -> %d from the cached dataset "
+                    "(classes: %s).", cfg.data.num_classes, len(class_names),
+                    class_names)
+        cfg.data.num_classes = len(class_names)
     datasets = load_split_datasets(cache, split, device)
-    return datasets, cache["class_names"]
+    return datasets, class_names

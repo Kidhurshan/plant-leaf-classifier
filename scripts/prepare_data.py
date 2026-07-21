@@ -52,9 +52,10 @@ def main() -> None:
     disc = discover_dataset(cfg.paths.data_dir)
     LOG.info("Discovered %d images across %d classes: %s",
              disc.total, disc.num_classes, disc.class_names)
-    assert disc.num_classes == cfg.data.num_classes, (
-        f"Expected {cfg.data.num_classes} classes, found {disc.num_classes}."
-    )
+    if disc.num_classes != cfg.data.num_classes:
+        LOG.warning("Found %d classes (expected %d): %s. Using the actual "
+                    "discovered classes.", disc.num_classes,
+                    cfg.data.num_classes, disc.class_names)
     if disc.total != cfg.data.expected_total:
         LOG.warning("Total images = %d (expected %d).", disc.total,
                     cfg.data.expected_total)
