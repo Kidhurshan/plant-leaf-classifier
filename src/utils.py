@@ -185,6 +185,14 @@ def sync_repo(cwd: Optional[Path] = None) -> str:
     commit = get_git_commit(short=True, cwd=cwd)
     dirty = " [DIRTY WORKING TREE]" if git_is_dirty(cwd) else ""
     print(f"Now running code at commit: {commit}{dirty}")
+    if pull and "up to date" not in pull.lower():
+        print(
+            "\n" + "!" * 68 +
+            "\n!! The pull brought NEW CODE into this runtime."
+            "\n!! %autoreload CANNOT reload changed classes/dataclasses."
+            "\n!! -> RESTART THE KERNEL now, then run the notebook from the top."
+            "\n" + "!" * 68
+        )
     return commit
 
 

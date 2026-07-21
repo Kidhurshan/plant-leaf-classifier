@@ -13,7 +13,7 @@ Usage
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -175,27 +175,43 @@ def _require(d: Dict[str, Any], key: str, ctx: str) -> Any:
     return d[key]
 
 
+def _make(cls, data: Dict[str, Any], ctx: str):
+    """Build a dataclass from a dict, ignoring unknown keys.
+
+    This keeps the config tolerant of version skew: a newer YAML carrying a key
+    an older ``src/config.py`` does not know about produces a warning instead of
+    a hard ``TypeError`` (and vice-versa, since new fields carry defaults).
+    """
+    valid = {f.name for f in fields(cls)}
+    unknown = sorted(set(data) - valid)
+    if unknown:
+        print(f"[config] WARNING: ignoring unknown key(s) in '{ctx}': {unknown} "
+              f"-- your config file may be newer than the code. If you just "
+              f"pulled, RESTART THE KERNEL.")
+    return cls(**{k: v for k, v in data.items() if k in valid})
+
+
 def _build(raw: Dict[str, Any]) -> Config:
-    paths = Paths(**_require(raw, "paths", "root"))
+    paths = _make(Paths, _require(raw, "paths", "root"), "paths")
 
     data_raw = dict(_require(raw, "data", "root"))
-    split = Split(**_require(data_raw, "split", "data"))
-    data_raw["split"] = split
-    data = DataCfg(**data_raw)
+    data_raw["split"] = _make(Split, _require(data_raw, "split", "data"), "data.split")
+    data = _make(DataCfg, data_raw, "data")
 
     models_raw = _require(raw, "models", "root")
-    models = {k: ModelDef(**v) for k, v in models_raw.items()}
+    models = {k: _make(ModelDef, v, f"models.{k}") for k, v in models_raw.items()}
 
-    head = HeadCfg(**_require(raw, "head", "root"))
-    train = TrainCfg(**_require(raw, "train", "root"))
+    head = _make(HeadCfg, _require(raw, "head", "root"), "head")
+    train = _make(TrainCfg, _require(raw, "train", "root"), "train")
 
     aug_raw = dict(_require(raw, "augment", "root"))
-    aug_raw["color_jitter"] = ColorJitter(**aug_raw["color_jitter"])
-    augment = AugmentCfg(**aug_raw)
+    aug_raw["color_jitter"] = _make(ColorJitter, aug_raw["color_jitter"],
+                                    "augment.color_jitter")
+    augment = _make(AugmentCfg, aug_raw, "augment")
 
-    loss = LossCfg(**_require(raw, "loss", "root"))
-    eval_cfg = EvalCfg(**_require(raw, "eval", "root"))
-    smoke = SmokeCfg(**_require(raw, "smoke", "root"))
+    loss = _make(LossCfg, _require(raw, "loss", "root"), "loss")
+    eval_cfg = _make(EvalCfg, _require(raw, "eval", "root"), "eval")
+    smoke = _make(SmokeCfg, _require(raw, "smoke", "root"), "smoke")
 
     return Config(
         seed=int(_require(raw, "seed", "root")),
