@@ -445,12 +445,17 @@ def plot_model_comparison_panel(items, out_path=None,
     return fig
 
 
-def plot_contact_sheet(paths, start=0, ncols=8, out_path=None,
+def plot_contact_sheet(images, labels=None, ncols=8, out_path=None,
                        title="Available images"):
-    """Numbered thumbnail sheet so an evaluator can see and pick images."""
-    from PIL import Image
+    """Numbered thumbnail sheet so an evaluator can see and pick images.
 
-    n = len(paths)
+    ``images`` may be file paths **or** image arrays/tensors (e.g. rows of the
+    cached uint8 tensor). ``labels`` gives the caption under each thumbnail
+    (defaults to the position index).
+    """
+    from pathlib import Path as _P
+
+    n = len(images)
     nrows = int(np.ceil(n / ncols)) if n else 1
     fig, axes = plt.subplots(nrows, ncols,
                              figsize=(1.6 * ncols, 1.85 * nrows), squeeze=False)
@@ -459,9 +464,15 @@ def plot_contact_sheet(paths, start=0, ncols=8, out_path=None,
         ax.axis("off")
         if i >= n:
             continue
-        with Image.open(paths[i]) as im:
-            ax.imshow(im.convert("RGB").resize((128, 128)))
-        ax.set_title(f"[{start + i}]", fontsize=8, color=SECONDARY)
+        img = images[i]
+        if isinstance(img, (str, _P)):
+            from PIL import Image
+            with Image.open(img) as im:
+                ax.imshow(im.convert("RGB").resize((128, 128)))
+        else:
+            ax.imshow(to_hwc_uint8(img))
+        cap = labels[i] if labels is not None else i
+        ax.set_title(f"[{cap}]", fontsize=8, color=SECONDARY)
     fig.suptitle(title, fontsize=13, fontweight="bold", color=INK)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     _save(fig, out_path)

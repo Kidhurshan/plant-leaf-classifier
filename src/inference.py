@@ -140,11 +140,52 @@ class ModelComparer:
         LOG.info("ModelComparer ready with %d model(s): %s",
                  len(self.models), list(self.models))
 
-    def compare(self, inputs, top_k: int = 3, with_gradcam: bool = True,
-                batch_size: int = 8, max_images: Optional[int] = None) -> List[Dict]:
-        """Return one entry per image holding every model's verdict + Grad-CAM."""
+    def _compare_batch(self, u8, truths, sources, top_k, with_gradcam) -> List[Dict]:
+        """Core: run every model on one uint8 batch and build result entries."""
         from src.gradcam import compute_gradcam, overlay_cam
 
+        x = self.aug(u8)
+        per_model = {}
+        for key, model in self.models.items():
+            with torch.no_grad():
+                with torch.amp.autocast(device_type=self.amp.device.type,
+                                        dtype=self.amp.amp_dtype,
+                                        enabled=self.amp.use_amp):
+                    logits = model(x)
+            probs = torch.softmax(logits.float(), dim=1).cpu().numpy()
+            cams = compute_gradcam(model, x.clone())[0] if with_gradcam else None
+            per_model[key] = (probs, cams)
+
+        out: List[Dict] = []
+        for i in range(u8.shape[0]):
+            disp = display_crop(u8[i], self.img_size)
+            truth = truths[i]
+            entry: Dict = {"path": str(sources[i]), "image": disp, "true": truth,
+                           "models": {}}
+            for key, (probs, cams) in per_model.items():
+                order = np.argsort(probs[i])[::-1]
+                pred = self.class_names[int(order[0])]
+                info = {
+                    "pred": pred,
+                    "confidence": float(probs[i, order[0]]),
+                    "topk": [(self.class_names[int(j)], float(probs[i, j]))
+                             for j in order[:top_k]],
+                    "correct": None if truth is None else (pred == truth),
+                }
+                if cams is not None:
+                    info["gradcam"] = overlay_cam(disp, cams[i])
+                entry["models"][key] = info
+            entry["agreement"] = len({m["pred"] for m in entry["models"].values()}) == 1
+            out.append(entry)
+
+        del x
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        return out
+
+    def compare(self, inputs, top_k: int = 3, with_gradcam: bool = True,
+                batch_size: int = 8, max_images: Optional[int] = None) -> List[Dict]:
+        """Compare all models on image **files/folders** (or uploaded images)."""
         seq = inputs if isinstance(inputs, (list, tuple)) else [inputs]
         paths = gather_image_paths([str(p) for p in seq])
         if not paths:
@@ -157,44 +198,49 @@ class ModelComparer:
             chunk = paths[start:start + batch_size]
             u8 = torch.stack([load_image_uint8(p, self.cache_size)
                               for p in chunk]).to(self.device)
-            x = self.aug(u8)
-
-            per_model = {}
-            for key, model in self.models.items():
-                with torch.no_grad():
-                    with torch.amp.autocast(device_type=self.amp.device.type,
-                                            dtype=self.amp.amp_dtype,
-                                            enabled=self.amp.use_amp):
-                        logits = model(x)
-                probs = torch.softmax(logits.float(), dim=1).cpu().numpy()
-                cams = compute_gradcam(model, x.clone())[0] if with_gradcam else None
-                per_model[key] = (probs, cams)
-
-            for i, path in enumerate(chunk):
-                disp = display_crop(u8[i], self.img_size)
-                truth = true_label_from_path(path)
-                entry: Dict = {"path": str(path), "image": disp, "true": truth,
-                               "models": {}}
-                for key, (probs, cams) in per_model.items():
-                    order = np.argsort(probs[i])[::-1]
-                    pred = self.class_names[int(order[0])]
-                    info = {
-                        "pred": pred,
-                        "confidence": float(probs[i, order[0]]),
-                        "topk": [(self.class_names[int(j)], float(probs[i, j]))
-                                 for j in order[:top_k]],
-                        "correct": None if truth is None else (pred == truth),
-                    }
-                    if cams is not None:
-                        info["gradcam"] = overlay_cam(disp, cams[i])
-                    entry["models"][key] = info
-                entry["agreement"] = len({m["pred"] for m in entry["models"].values()}) == 1
-                results.append(entry)
-
-            del u8, x
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
+            truths = [true_label_from_path(p) for p in chunk]
+            results += self._compare_batch(u8, truths, chunk, top_k, with_gradcam)
+            del u8
         return results
+
+    def compare_from_cache(self, cache: dict, indices: Sequence[int],
+                           top_k: int = 3, with_gradcam: bool = True,
+                           batch_size: int = 8) -> List[Dict]:
+        """Compare all models on images taken from the **cached tensor**.
+
+        This is the demo-safe path: the cache lives on Google Drive, so the
+        evaluator demo needs no Kaggle download and no raw dataset folder.
+        """
+        images, labels = cache["images"], cache["labels"]
+        names = cache["class_names"]
+        paths = cache.get("paths")
+        idx = [int(i) for i in indices]
+
+        results: List[Dict] = []
+        for start in range(0, len(idx), batch_size):
+            chunk = idx[start:start + batch_size]
+            u8 = images[chunk].to(self.device)
+            truths = [names[int(labels[i])] for i in chunk]
+            srcs = [paths[i] if paths else f"cache[{i}]" for i in chunk]
+            results += self._compare_batch(u8, truths, srcs, top_k, with_gradcam)
+            del u8
+        return results
+
+
+def load_demo_cache(cfg: Config, smoke: bool = False) -> dict:
+    """Load the cached image tensor (from Drive if `use_drive_paths` was called)."""
+    from src.data import cache_path, load_cache
+    return load_cache(cache_path(cfg.paths.cache_dir, smoke))
+
+
+def cache_index_by_species(cache: dict) -> Dict[str, List[int]]:
+    """species -> list of cache indices, so an evaluator can browse and pick."""
+    from collections import defaultdict
+    names, labels = cache["class_names"], cache["labels"]
+    out: Dict[str, List[int]] = defaultdict(list)
+    for i, y in enumerate(labels.tolist()):
+        out[names[int(y)]].append(i)
+    return {k: out[k] for k in sorted(out)}
 
 
 def comparison_summary(items: List[Dict]) -> Dict:
