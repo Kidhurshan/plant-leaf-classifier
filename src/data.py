@@ -28,11 +28,13 @@ from src.utils import LOG, bytes_to_human
 # --------------------------------------------------------------------------- #
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp"}
 
-# The 8 EgyPLI species. Matching is substring-on-path, so variants like
-# "Blueberry" still map to "berry" and "Apple___healthy" maps to "apple".
+# The 8 EgyPLI species as they actually appear in the dataset (verified from the
+# real folder tree: Apple, Berry, Fig, Guava, Orange, Palm, Persimmon, Tomato).
+# Matching is substring-on-path, so "Apple___healthy" maps to "apple", etc.
+# Any species not listed here is still captured by the folder-structure fallback.
 SPECIES: List[str] = [
     "apple", "berry", "fig", "guava",
-    "orange", "plum", "persimmon", "tomato",
+    "orange", "palm", "persimmon", "tomato",
 ]
 
 # Tokens that indicate leaf health status, merged away into the species label.
