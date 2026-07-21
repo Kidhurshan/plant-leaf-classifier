@@ -525,15 +525,36 @@ def make_stratified_splits(
     return split
 
 
-def derive_group_ids(paths: Sequence) -> np.ndarray:
+def derive_group_ids(paths: Sequence, max_group_size: int = 8) -> np.ndarray:
     """Group id per image so burst/near-duplicate shots of the SAME leaf share
     one id. Key = parent folder + filename with a trailing ``_N`` burst suffix
-    stripped (e.g. ``IMG_123.jpg`` and ``IMG_123_1.jpg`` -> same group)."""
-    ids: List[str] = []
+    stripped (e.g. ``IMG_123.jpg`` and ``IMG_123_1.jpg`` -> same group).
+
+    Guard: sequentially-numbered datasets (``orange_1.jpg`` ... ``orange_500.jpg``)
+    would otherwise collapse a whole class into one unsplittable mega-group. Any
+    candidate group larger than ``max_group_size`` is therefore not a burst, and
+    its members are demoted to singleton groups.
+    """
+    raw: List[str] = []
     for p in paths:
         p = Path(p)
         base = re.sub(r"_\d+$", "", p.stem)
-        ids.append(f"{p.parent}::{base}")
+        raw.append(f"{p.parent}::{base}")
+    counts = Counter(raw)
+    n_exploded = 0
+    ids: List[str] = []
+    for i, g in enumerate(raw):
+        if counts[g] > max_group_size:
+            ids.append(f"{g}::solo{i}")   # too large to be a real burst
+            n_exploded += 1
+        else:
+            ids.append(g)
+    if n_exploded:
+        LOG.info(
+            "%d images sat in candidate groups larger than %d (sequential "
+            "numbering, not bursts) -> treated as individual leaves.",
+            n_exploded, max_group_size,
+        )
     return np.array(ids, dtype=object)
 
 
@@ -546,32 +567,31 @@ def make_grouped_stratified_splits(
     """Stratified split that keeps whole groups together (no leaf split across
     train/val/test). Fractions target the image count per class; groups are
     assigned greedily so class balance is preserved as closely as possible."""
-    train_f, val_f, _ = fractions
+    train_f, val_f, test_f = fractions
     rng = np.random.default_rng(seed)
     labels = np.asarray(labels)
     groups = np.asarray(groups)
     split = np.empty(len(labels), dtype=object)
+    names = ("train", "val", "test")
     for cls in np.unique(labels):
         cls_idx = np.where(labels == cls)[0]
         cls_groups = groups[cls_idx]
-        uniq = np.unique(cls_groups)
-        rng.shuffle(uniq)
+        sizes = Counter(cls_groups.tolist())
+        uniq = np.array(list(sizes.keys()), dtype=object)
+        rng.shuffle(uniq)                                  # randomise ties
+        # Largest groups first, so big blocks land where the deficit is biggest.
+        order = sorted(uniq, key=lambda g: -sizes[g])
         n_total = len(cls_idx)
-        n_train_target = train_f * n_total
-        n_val_target = val_f * n_total
+        target = {"train": train_f * n_total,
+                  "val": val_f * n_total,
+                  "test": test_f * n_total}
+        cum = {k: 0.0 for k in names}
         assign: Dict[str, str] = {}
-        cum_train = cum_val = 0
-        n_groups = len(uniq)
-        for gi, g in enumerate(uniq):
-            g_size = int((cls_groups == g).sum())
-            # Guarantee at least one group each for val and test where possible.
-            remaining = n_groups - gi
-            if cum_train < n_train_target and remaining > 2:
-                assign[g] = "train"; cum_train += g_size
-            elif cum_val < n_val_target and remaining > 1:
-                assign[g] = "val"; cum_val += g_size
-            else:
-                assign[g] = "test"
+        for g in order:
+            # Give the group to whichever split is furthest below its target.
+            s = max(names, key=lambda k: target[k] - cum[k])
+            assign[g] = s
+            cum[s] += sizes[g]
         for i in cls_idx:
             split[i] = assign[groups[i]]
     return split
@@ -595,8 +615,28 @@ def build_splits(
         n_groups = len(set(groups.tolist()))
         LOG.info("Group-aware split: %d images across %d leaf-groups.",
                  len(labels), n_groups)
-        return make_grouped_stratified_splits(labels, groups, fractions, seed)
-    return make_stratified_splits(labels, fractions, seed)
+        split = make_grouped_stratified_splits(labels, groups, fractions, seed)
+    else:
+        split = make_stratified_splits(labels, fractions, seed)
+    _report_split_balance(labels, split)
+    return split
+
+
+def _report_split_balance(labels: np.ndarray, split: np.ndarray) -> None:
+    """Print the per-class train/val/test share so imbalance is obvious."""
+    labels = np.asarray(labels)
+    print("\nSplit balance per class (share of that class's images):")
+    print(f"  {'class_id':<10}{'train':>8}{'val':>8}{'test':>8}{'n':>8}")
+    for cls in np.unique(labels):
+        m = labels == cls
+        n = int(m.sum())
+        row = {k: int((split[m] == k).sum()) for k in ("train", "val", "test")}
+        print(f"  {int(cls):<10}{row['train']/n:>7.0%}{row['val']/n:>8.0%}"
+              f"{row['test']/n:>8.0%}{n:>8}")
+    tot = len(labels)
+    g = {k: int((split == k).sum()) for k in ("train", "val", "test")}
+    print(f"  {'TOTAL':<10}{g['train']/tot:>7.0%}{g['val']/tot:>8.0%}"
+          f"{g['test']/tot:>8.0%}{tot:>8}\n")
 
 
 def write_splits_csv(

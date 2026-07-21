@@ -27,9 +27,12 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from src.augment import GPUAugment, apply_mix
 from src.config import Config
+from src.data import splits_csv_path
 from src.losses import build_loss
 from src.models import build_model
-from src.utils import AmpConfig, LOG, detect_amp, human_time, save_run_meta
+from src.utils import (
+    AmpConfig, LOG, detect_amp, file_fingerprint, human_time, save_run_meta,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -250,17 +253,32 @@ def train_model(
     history: List[dict] = []
     state = {"best_f1": -1.0, "epoch_wall": []}
 
+    # Fingerprint of the exact split this run trains on. Stamped into every
+    # checkpoint so a checkpoint from a DIFFERENT split is never resumed into.
+    split_fp = file_fingerprint(splits_csv_path(cfg.paths.metrics_dir, smoke))
+
     # ---- resume ----------------------------------------------------------- #
     start_phase, start_epoch = 1, 1
     if resume and last_path.exists():
         ck = load_checkpoint(last_path, map_location=device)
-        model.load_state_dict(ck["model_state"])
-        start_phase = ck.get("phase", 1)
-        start_epoch = ck.get("epoch", 0) + 1
-        state["best_f1"] = ck.get("best_f1", -1.0)
-        history = ck.get("history", [])
-        LOG.info("Resumed '%s' from %s (phase %d, next epoch %d, best_f1=%.4f).",
-                 model_key, last_path, start_phase, start_epoch, state["best_f1"])
+        ck_fp = ck.get("split_fingerprint")
+        if ck_fp != split_fp:
+            LOG.warning(
+                "Ignoring checkpoint %s: it was trained on a DIFFERENT data "
+                "split (fingerprint %s != %s). Training '%s' FROM SCRATCH.",
+                last_path.name, ck_fp, split_fp, model_key,
+            )
+            print(f"  >> Split changed since that checkpoint -> training "
+                  f"'{model_key}' from scratch (old checkpoint ignored).")
+        else:
+            model.load_state_dict(ck["model_state"])
+            start_phase = ck.get("phase", 1)
+            start_epoch = ck.get("epoch", 0) + 1
+            state["best_f1"] = ck.get("best_f1", -1.0)
+            history = ck.get("history", [])
+            LOG.info("Resumed '%s' from %s (phase %d, next epoch %d, "
+                     "best_f1=%.4f).", model_key, last_path, start_phase,
+                     start_epoch, state["best_f1"])
 
     def _log_epoch(phase: int, epoch: int, tr_loss: float,
                    val: dict, lr: float, dt: float) -> None:
@@ -289,6 +307,7 @@ def train_model(
                 "class_names": class_names,
                 "num_classes": num_classes, "img_size": img_size,
                 "use_cbam": cfg.model_def(model_key).cbam,
+                "split_fingerprint": split_fp,
                 "backbone": model.backbone_name,
             })
             print(f"    * new best macro-F1={val['macro_f1']:.4f} -> saved {best_path.name}")
@@ -317,6 +336,7 @@ def train_model(
             save_checkpoint(last_path, model, {
                 "phase": 1, "epoch": epoch, "best_f1": state["best_f1"],
                 "history": history, "model_key": model_key,
+                "split_fingerprint": split_fp,
             })
         start_phase, start_epoch = 2, 1  # advance
 
@@ -352,6 +372,7 @@ def train_model(
                 save_checkpoint(last_path, model, {
                     "phase": 2, "epoch": epoch, "best_f1": state["best_f1"],
                     "history": history, "model_key": model_key,
+                    "split_fingerprint": split_fp,
                 })
                 if patience >= cfg.train.patience:
                     print(f"  Early stopping at epoch {epoch} "

@@ -319,6 +319,24 @@ def save_run_meta(
 # --------------------------------------------------------------------------- #
 # Misc                                                                         #
 # --------------------------------------------------------------------------- #
+def file_fingerprint(path: str | Path) -> str:
+    """Short md5 of a file's contents ('missing' if absent).
+
+    Used to stamp checkpoints with the data split they were trained on, so a
+    changed split can never be silently resumed into.
+    """
+    import hashlib
+
+    path = Path(path)
+    if not path.exists():
+        return "missing"
+    h = hashlib.md5()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()[:12]
+
+
 def bytes_to_human(n: int) -> str:
     """Bytes -> human string, e.g. 705_000_000 -> '672.3 MB'."""
     step = 1024.0
