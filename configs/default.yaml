@@ -26,6 +26,10 @@ data:
   expected_total: 3588           # warn (do not crash) if the real total differs
   cache_size: 256                # images are decoded + resized to this once, then cached
   img_size: 224                  # training/eval resolution (Swin is fixed at 224)
+  # Group-aware splitting: keep all burst/near-duplicate shots of the SAME leaf
+  # (filenames sharing a base, e.g. IMG_123.jpg / IMG_123_1.jpg) in the SAME
+  # split, so val/test measure true generalisation (no train->val leakage).
+  group_aware_split: true
   # Deterministic stratified split fractions (must sum to 1.0).
   split:
     train: 0.70

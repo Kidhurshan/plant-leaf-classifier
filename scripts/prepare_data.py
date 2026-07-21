@@ -22,10 +22,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import load_config           # noqa: E402
 from src.data import (                        # noqa: E402
     build_cache,
+    build_splits,
     cache_path,
     discover_dataset,
     download_dataset,
-    make_stratified_splits,
     splits_csv_path,
     stratified_subset_indices,
     write_splits_csv,
@@ -77,10 +77,10 @@ def main() -> None:
             sub_labels = disc.labels
             sub_paths = [str(p) for p in disc.paths]
 
-        split = make_stratified_splits(
-            sub_labels,
+        split = build_splits(
+            sub_labels, sub_paths,
             (cfg.data.split.train, cfg.data.split.val, cfg.data.split.test),
-            cfg.seed,
+            cfg.seed, group_aware=cfg.data.group_aware_split,
         )
         write_splits_csv(
             sub_paths, sub_labels, disc.class_names, split,

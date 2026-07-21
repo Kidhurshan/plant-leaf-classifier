@@ -59,6 +59,7 @@ class DataCfg:
     cache_size: int
     img_size: int
     split: Split
+    group_aware_split: bool = True
 
 
 @dataclass

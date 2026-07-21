@@ -525,6 +525,80 @@ def make_stratified_splits(
     return split
 
 
+def derive_group_ids(paths: Sequence) -> np.ndarray:
+    """Group id per image so burst/near-duplicate shots of the SAME leaf share
+    one id. Key = parent folder + filename with a trailing ``_N`` burst suffix
+    stripped (e.g. ``IMG_123.jpg`` and ``IMG_123_1.jpg`` -> same group)."""
+    ids: List[str] = []
+    for p in paths:
+        p = Path(p)
+        base = re.sub(r"_\d+$", "", p.stem)
+        ids.append(f"{p.parent}::{base}")
+    return np.array(ids, dtype=object)
+
+
+def make_grouped_stratified_splits(
+    labels: np.ndarray,
+    groups: np.ndarray,
+    fractions: Tuple[float, float, float],
+    seed: int,
+) -> np.ndarray:
+    """Stratified split that keeps whole groups together (no leaf split across
+    train/val/test). Fractions target the image count per class; groups are
+    assigned greedily so class balance is preserved as closely as possible."""
+    train_f, val_f, _ = fractions
+    rng = np.random.default_rng(seed)
+    labels = np.asarray(labels)
+    groups = np.asarray(groups)
+    split = np.empty(len(labels), dtype=object)
+    for cls in np.unique(labels):
+        cls_idx = np.where(labels == cls)[0]
+        cls_groups = groups[cls_idx]
+        uniq = np.unique(cls_groups)
+        rng.shuffle(uniq)
+        n_total = len(cls_idx)
+        n_train_target = train_f * n_total
+        n_val_target = val_f * n_total
+        assign: Dict[str, str] = {}
+        cum_train = cum_val = 0
+        n_groups = len(uniq)
+        for gi, g in enumerate(uniq):
+            g_size = int((cls_groups == g).sum())
+            # Guarantee at least one group each for val and test where possible.
+            remaining = n_groups - gi
+            if cum_train < n_train_target and remaining > 2:
+                assign[g] = "train"; cum_train += g_size
+            elif cum_val < n_val_target and remaining > 1:
+                assign[g] = "val"; cum_val += g_size
+            else:
+                assign[g] = "test"
+        for i in cls_idx:
+            split[i] = assign[groups[i]]
+    return split
+
+
+def build_splits(
+    labels: np.ndarray,
+    paths: Sequence,
+    fractions: Tuple[float, float, float],
+    seed: int,
+    group_aware: bool = True,
+) -> np.ndarray:
+    """Return a per-image split-name array, group-aware by default.
+
+    Group-aware keeps all shots of one leaf in the same split (prevents
+    near-duplicate leakage); set ``group_aware=False`` for a plain per-image
+    stratified split.
+    """
+    if group_aware:
+        groups = derive_group_ids(paths)
+        n_groups = len(set(groups.tolist()))
+        LOG.info("Group-aware split: %d images across %d leaf-groups.",
+                 len(labels), n_groups)
+        return make_grouped_stratified_splits(labels, groups, fractions, seed)
+    return make_stratified_splits(labels, fractions, seed)
+
+
 def write_splits_csv(
     paths: Sequence[str],
     labels: np.ndarray,
