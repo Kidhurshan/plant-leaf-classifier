@@ -64,6 +64,155 @@ def gather_image_paths(inputs: Sequence[str]) -> List[Path]:
     return paths
 
 
+def load_image_uint8(path, cache_size: int) -> "torch.Tensor":
+    """Read an image file as a CHW uint8 tensor resized to ``cache_size``."""
+    from PIL import Image
+    with Image.open(path) as im:
+        im = im.convert("RGB").resize((cache_size, cache_size), Image.BILINEAR)
+        a = np.asarray(im, dtype=np.uint8)
+    return torch.from_numpy(np.transpose(a, (2, 0, 1)))
+
+
+def display_crop(u8_chw: "torch.Tensor", img_size: int) -> np.ndarray:
+    """Centre-crop a CHW uint8 tensor to ``img_size`` -> HWC uint8 (for display)."""
+    _, h, w = u8_chw.shape
+    top, left = (h - img_size) // 2, (w - img_size) // 2
+    return u8_chw[:, top:top + img_size, left:left + img_size].permute(1, 2, 0).cpu().numpy()
+
+
+def true_label_from_path(path) -> Optional[str]:
+    """Infer the ground-truth species from a dataset path (None if unknown,
+    e.g. for an image the evaluator uploads)."""
+    from src.data import infer_species
+    return infer_species(str(path))
+
+
+def list_dataset_images(data_dir, species: Optional[Sequence[str]] = None) -> Dict[str, List]:
+    """Map species -> sorted image paths, so an evaluator can browse and pick."""
+    from collections import defaultdict
+    from src.data import find_image_files
+
+    out: Dict[str, List] = defaultdict(list)
+    for p in find_image_files(data_dir):
+        sp = true_label_from_path(p)
+        if sp and (species is None or sp in species):
+            out[sp].append(p)
+    return {k: sorted(v) for k, v in sorted(out.items())}
+
+
+class ModelComparer:
+    """Runs **every** trained model on the same images for side-by-side review.
+
+    Built for the live demo: an evaluator hand-picks images and sees each
+    model's prediction, confidence, top-k and Grad-CAM evidence together, with
+    correctness marked automatically when the true species is known from the path.
+    """
+
+    def __init__(self, cfg: Config, device, model_keys: Optional[Sequence[str]] = None,
+                 smoke: bool = False):
+        self.cfg = cfg
+        self.device = device
+        self.amp = detect_amp(device)
+        self.img_size = cfg.data.img_size
+        self.cache_size = cfg.data.cache_size
+        self.aug = GPUAugment(cfg.augment, self.img_size, device, training=False)
+        self.models: Dict[str, "torch.nn.Module"] = {}
+        self.class_names: Optional[List[str]] = None
+
+        for k in (model_keys or cfg.model_list):
+            ck = _best_ckpt(cfg, k, smoke)
+            if not ck.exists():
+                LOG.warning("Skipping '%s' (no checkpoint at %s).", k, ck)
+                continue
+            self.models[k] = load_trained_model(cfg, k, ck, device)
+            if self.class_names is None:
+                blob = torch.load(ck, map_location="cpu", weights_only=False)
+                self.class_names = blob.get("class_names")
+
+        if not self.models:
+            raise FileNotFoundError(
+                f"No trained checkpoints found in '{cfg.paths.checkpoint_dir}'. "
+                f"Train the models first (notebooks 02-04)."
+            )
+        if not self.class_names:
+            from src.data import SPECIES
+            self.class_names = sorted(SPECIES)
+        LOG.info("ModelComparer ready with %d model(s): %s",
+                 len(self.models), list(self.models))
+
+    def compare(self, inputs, top_k: int = 3, with_gradcam: bool = True,
+                batch_size: int = 8, max_images: Optional[int] = None) -> List[Dict]:
+        """Return one entry per image holding every model's verdict + Grad-CAM."""
+        from src.gradcam import compute_gradcam, overlay_cam
+
+        seq = inputs if isinstance(inputs, (list, tuple)) else [inputs]
+        paths = gather_image_paths([str(p) for p in seq])
+        if not paths:
+            raise FileNotFoundError("No valid image files found in the input.")
+        if max_images is not None:
+            paths = paths[:max_images]
+
+        results: List[Dict] = []
+        for start in range(0, len(paths), batch_size):
+            chunk = paths[start:start + batch_size]
+            u8 = torch.stack([load_image_uint8(p, self.cache_size)
+                              for p in chunk]).to(self.device)
+            x = self.aug(u8)
+
+            per_model = {}
+            for key, model in self.models.items():
+                with torch.no_grad():
+                    with torch.amp.autocast(device_type=self.amp.device.type,
+                                            dtype=self.amp.amp_dtype,
+                                            enabled=self.amp.use_amp):
+                        logits = model(x)
+                probs = torch.softmax(logits.float(), dim=1).cpu().numpy()
+                cams = compute_gradcam(model, x.clone())[0] if with_gradcam else None
+                per_model[key] = (probs, cams)
+
+            for i, path in enumerate(chunk):
+                disp = display_crop(u8[i], self.img_size)
+                truth = true_label_from_path(path)
+                entry: Dict = {"path": str(path), "image": disp, "true": truth,
+                               "models": {}}
+                for key, (probs, cams) in per_model.items():
+                    order = np.argsort(probs[i])[::-1]
+                    pred = self.class_names[int(order[0])]
+                    info = {
+                        "pred": pred,
+                        "confidence": float(probs[i, order[0]]),
+                        "topk": [(self.class_names[int(j)], float(probs[i, j]))
+                                 for j in order[:top_k]],
+                        "correct": None if truth is None else (pred == truth),
+                    }
+                    if cams is not None:
+                        info["gradcam"] = overlay_cam(disp, cams[i])
+                    entry["models"][key] = info
+                entry["agreement"] = len({m["pred"] for m in entry["models"].values()}) == 1
+                results.append(entry)
+
+            del u8, x
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+        return results
+
+
+def comparison_summary(items: List[Dict]) -> Dict:
+    """Per-model correct/total over the reviewed images, plus agreement rate."""
+    if not items:
+        return {}
+    keys = list(items[0]["models"].keys())
+    scored = [it for it in items if it.get("true")]
+    out = {}
+    for k in keys:
+        n_ok = sum(1 for it in scored if it["models"][k]["correct"])
+        out[k] = {"correct": n_ok, "total": len(scored),
+                  "accuracy": (n_ok / len(scored)) if scored else float("nan")}
+    out["_agreement"] = sum(1 for it in items if it["agreement"]) / len(items)
+    out["_n_images"] = len(items)
+    return out
+
+
 class Predictor:
     """Holds one or more models and runs confidence-weighted inference."""
 

@@ -402,6 +402,73 @@ def plot_gradcam_grid(items: List[dict], out_path=None,
 
 
 # --------------------------------------------------------------------------- #
+# Evaluator demo: per-image, all-models comparison panel                      #
+# --------------------------------------------------------------------------- #
+def plot_model_comparison_panel(items, out_path=None,
+                                title="Per-image model comparison (Grad-CAM evidence)"):
+    """One row per image: the input, then each model's Grad-CAM with its
+    prediction, confidence and a correct/incorrect border.
+
+    ``items`` come from :meth:`src.inference.ModelComparer.compare`.
+    """
+    if not items:
+        raise ValueError("No items to plot.")
+    keys = list(items[0]["models"].keys())
+    nrows, ncols = len(items), 1 + len(keys)
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(2.9 * ncols, 3.3 * nrows), squeeze=False)
+    for r, it in enumerate(items):
+        ax = axes[r][0]
+        ax.imshow(to_hwc_uint8(it["image"]))
+        ax.set_xticks([]); ax.set_yticks([]); ax.grid(False)
+        truth = it.get("true")
+        ax.set_title(f"INPUT\ntrue: {truth if truth else 'unknown'}",
+                     fontsize=9, color=INK, fontweight="bold")
+        for sp in ax.spines.values():
+            sp.set_edgecolor(SECONDARY); sp.set_linewidth(1.2)
+        for c, k in enumerate(keys, start=1):
+            m = it["models"][k]
+            a = axes[r][c]
+            a.imshow(to_hwc_uint8(m.get("gradcam", it["image"])))
+            a.set_xticks([]); a.set_yticks([]); a.grid(False)
+            ok = m.get("correct")
+            col = MUTED if ok is None else ("#006300" if ok else "#d03b3b")
+            mark = "" if ok is None else ("  ✓" if ok else "  ✗")
+            a.set_title(f"{display_name(k)}\n{m['pred']} "
+                        f"{m['confidence'] * 100:.1f}%{mark}",
+                        fontsize=9, color=col)
+            for sp in a.spines.values():
+                sp.set_visible(True); sp.set_edgecolor(col); sp.set_linewidth(2.5)
+    fig.suptitle(title, fontsize=15, fontweight="bold", color=INK)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.03 / max(nrows, 1) - 0.01))
+    _save(fig, out_path)
+    return fig
+
+
+def plot_contact_sheet(paths, start=0, ncols=8, out_path=None,
+                       title="Available images"):
+    """Numbered thumbnail sheet so an evaluator can see and pick images."""
+    from PIL import Image
+
+    n = len(paths)
+    nrows = int(np.ceil(n / ncols)) if n else 1
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(1.6 * ncols, 1.85 * nrows), squeeze=False)
+    flat = axes.ravel()
+    for i, ax in enumerate(flat):
+        ax.axis("off")
+        if i >= n:
+            continue
+        with Image.open(paths[i]) as im:
+            ax.imshow(im.convert("RGB").resize((128, 128)))
+        ax.set_title(f"[{start + i}]", fontsize=8, color=SECONDARY)
+    fig.suptitle(title, fontsize=13, fontweight="bold", color=INK)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    _save(fig, out_path)
+    return fig
+
+
+# --------------------------------------------------------------------------- #
 # 11. t-SNE of penultimate features                                          #
 # --------------------------------------------------------------------------- #
 def plot_tsne(features, labels, class_names: Sequence[str], out_path=None,
