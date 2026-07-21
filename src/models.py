@@ -110,6 +110,55 @@ class LeafClassifier(nn.Module):
             return output
         return hook
 
+    def _stage_channels(self, stage_list: List[nn.Module]) -> List[int]:
+        """Output channel count per backbone stage.
+
+        timm exposes ``feature_info`` either as a ``FeatureInfo`` object (with
+        ``.channels()``) or as a plain list of dicts (``num_chs``), depending on
+        version and how the model was created. If neither works we probe the
+        real shapes with a dry-run forward, which is always correct.
+        """
+        fi = getattr(self.backbone, "feature_info", None)
+        if fi is not None:
+            try:
+                if hasattr(fi, "channels"):
+                    ch = list(fi.channels())
+                else:                                    # list of dicts
+                    ch = [d["num_chs"] for d in fi]
+                if len(ch) >= len(stage_list):
+                    return ch
+            except Exception as exc:                     # noqa: BLE001
+                LOG.debug("feature_info unusable (%s); probing shapes.", exc)
+
+        # Dry-run probe: record each stage's real output channels.
+        found: Dict[int, int] = {}
+        handles = []
+        for i, st in enumerate(stage_list):
+            def _probe(_m, _inp, out, i=i):
+                if isinstance(out, torch.Tensor) and out.ndim == 4:
+                    # stage outputs are NCHW for ConvNeXt-style backbones
+                    found[i] = int(out.shape[1])
+            handles.append(st.register_forward_hook(_probe))
+        try:
+            was_training = self.backbone.training
+            self.backbone.eval()
+            device = next(self.backbone.parameters()).device
+            with torch.no_grad():
+                self.backbone.forward_features(torch.zeros(1, 3, 224, 224,
+                                                           device=device))
+            self.backbone.train(was_training)
+        finally:
+            for h in handles:
+                h.remove()
+        if len(found) < len(stage_list):
+            raise RuntimeError(
+                f"Could not determine stage channels (probed {len(found)} of "
+                f"{len(stage_list)} stages)."
+            )
+        LOG.info("Probed stage channels via dry-run forward: %s",
+                 [found[i] for i in range(len(stage_list))])
+        return [found[i] for i in range(len(stage_list))]
+
     def _attach_cbam(self) -> None:
         """Attach CBAM after the last two ConvNeXt stages via forward hooks.
 
@@ -121,7 +170,7 @@ class LeafClassifier(nn.Module):
         if stages is not None:
             try:
                 stage_list = list(stages)
-                channels = list(self.backbone.feature_info.channels())
+                channels = self._stage_channels(stage_list)
                 targets = [len(stage_list) - 2, len(stage_list) - 1]
                 for si in targets:
                     ch = channels[si]
